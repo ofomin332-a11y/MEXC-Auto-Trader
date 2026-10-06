@@ -88,27 +88,22 @@ async def process_source_message(message_id, text, source="EVENT"):
            "No real order will be placed while LIVE_TRADING=false.")
 
 async def poll_channel(client, channel_entity):
-    last_id = 0
-    try:
-        latest = await client.get_messages(channel_entity, limit=1)
-        if latest:
-            last_id = latest[0].id
-            log.info("Polling baseline set | last_message_id=%s", last_id)
-    except Exception as e:
-        log.exception("Polling baseline failed: %s", e)
+    """
+    Compatibility loop for channel monitoring.
 
+    IMPORTANT: Telegram does not allow bot users to call GetHistoryRequest,
+    which is what client.get_messages() uses. Therefore this project does
+    NOT poll channel history. New messages are received through Telethon's
+    NewMessage event handler below.
+
+    Keeping this task alive preserves the old polling configuration without
+    repeatedly generating BotMethodInvalidError.
+    """
+    log.info(
+        "Polling fallback disabled: Telegram bot accounts cannot use "
+        "GetHistoryRequest. New messages are monitored via NewMessage events."
+    )
     while True:
-        try:
-            messages = await client.get_messages(channel_entity, limit=10)
-            fresh = [m for m in reversed(messages) if m.id > last_id]
-            for msg in fresh:
-                last_id = max(last_id, msg.id)
-                await process_source_message(msg.id, msg.raw_text or "", source="POLL")
-            if fresh:
-                log.info("Polling processed %s new message(s) | last_message_id=%s",
-                         len(fresh), last_id)
-        except Exception as e:
-            log.exception("Channel polling error: %s", e)
         await asyncio.sleep(POLL_SECONDS)
 
 async def main():
@@ -129,10 +124,11 @@ async def main():
              "TP=%.4f%% | SL=%.2f%% | POLL=%ss",
              CHANNEL, LIVE_TRADING, LEVERAGE, TP_PCT * 100, SL_PCT * 100, POLL_SECONDS)
 
-    notify("✅ MEXC AUTO TRADER ONLINE\n"
+    notify("✅ SMALLFISH TELEGRAM SCANNER ONLINE\n"
            f"Channel: @{CHANNEL}\nLIVE_TRADING={LIVE_TRADING}\n"
-           f"Leverage: {LEVERAGE}x\nTP: {TP_PCT * 100}%\nSL: {SL_PCT * 100}%\n"
-           f"Polling fallback: {POLL_SECONDS}s\nListener diagnostics: ENABLED")
+           f"Polling history: DISABLED (Telegram restriction)\n"
+           "New-message listener: ENABLED\n"
+           "No real orders are placed by this scanner.")
 
     seen_ids = set()
 
@@ -153,7 +149,7 @@ async def main():
             log.exception("Event handler error: %s", e)
 
     log.info("Global listener registered successfully.")
-    log.info("Polling fallback registered successfully. Waiting for new source messages...")
+    log.info("New-message listener registered successfully. Waiting for new source messages...")
 
     poll_task = asyncio.create_task(poll_channel(client, channel_entity))
     try:
