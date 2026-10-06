@@ -1,5 +1,2 @@
-MEXC Auto Trader
-
-Railway Variables must contain the credentials and configuration.
-Test configuration: MARGIN_USDT=25, LEVERAGE=30, TP_PCT=0.0083, SL_PCT=0.04, LIVE_TRADING=false.
-Never put secrets in source files.
+Diagnostic build for Telegram signal reception. Keep LIVE_TRADING=false during testing.
+Required Railway variables: TG_API_ID, TG_API_HASH, TG_SESSION, TELEGRAM_CHANNEL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, MARGIN_USDT, LEVERAGE, TP_PCT, SL_PCT, LIVE_TRADING.
