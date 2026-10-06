@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import logging
 import requests
 from decimal import Decimal
@@ -20,6 +21,7 @@ LEVERAGE = int(os.getenv("LEVERAGE", "30"))
 TP_PCT = Decimal(os.getenv("TP_PCT", "0.0083"))
 SL_PCT = Decimal(os.getenv("SL_PCT", "0.04"))
 LIVE_TRADING = os.getenv("LIVE_TRADING", "false").lower() == "true"
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "5"))
 
 def notify(message: str):
     if not NOTIFY_TOKEN or not NOTIFY_CHAT_ID:
@@ -48,11 +50,66 @@ def parse_signal(text: str):
         direction = "SHORT"
     else:
         return None
+
     m = re.search(r"\b([A-Z0-9]{2,20})USDT\b", t)
     if m:
         return {"direction": direction, "symbol": m.group(1) + "USDT"}
-    m = re.search(r"[$#]\s*([A-Z0-9]{2,20})", t) or re.search(r"\b([A-Z0-9]{2,20})\s*/\s*USDT\b", t)
+
+    m = re.search(r"[$#]\s*([A-Z0-9]{2,20})", t)
+    if not m:
+        m = re.search(r"\b([A-Z0-9]{2,20})\s*/\s*USDT\b", t)
+
     return {"direction": direction, "symbol": (m.group(1) + "USDT") if m else None}
+
+async def process_source_message(message_id, text, source="EVENT"):
+    log.info("NEW SOURCE MESSAGE | source=%s | message_id=%s | text=%s",
+             source, message_id, text[:2000].replace("\n", " | "))
+
+    parsed = parse_signal(text)
+    if not parsed:
+        log.info("MESSAGE IGNORED | no LONG/SHORT/PUMP/DUMP direction detected")
+        return
+
+    direction, symbol = parsed["direction"], parsed["symbol"]
+    log.info("PARSED SIGNAL | direction=%s | symbol=%s", direction, symbol or "UNKNOWN")
+
+    if not symbol:
+        notify("⚠️ SIGNAL RECEIVED BUT SYMBOL NOT PARSED\n"
+               f"Direction: {direction}\nSource: @{CHANNEL}\n"
+               f"Message ID: {message_id}\nText: {text[:1200]}")
+        return
+
+    notify("🧪 TEST SIGNAL RECEIVED\n"
+           f"Direction: {direction}\nSymbol: {symbol}\n"
+           f"Margin: {MARGIN_USDT} USDT\nLeverage: {LEVERAGE}x\n"
+           f"TP: {TP_PCT * 100}% price move\nSL: {SL_PCT * 100}% price move\n"
+           f"LIVE_TRADING={LIVE_TRADING}\nSource: @{CHANNEL}\n"
+           f"Message ID: {message_id}\n"
+           "No real order will be placed while LIVE_TRADING=false.")
+
+async def poll_channel(client, channel_entity):
+    last_id = 0
+    try:
+        latest = await client.get_messages(channel_entity, limit=1)
+        if latest:
+            last_id = latest[0].id
+            log.info("Polling baseline set | last_message_id=%s", last_id)
+    except Exception as e:
+        log.exception("Polling baseline failed: %s", e)
+
+    while True:
+        try:
+            messages = await client.get_messages(channel_entity, limit=10)
+            fresh = [m for m in reversed(messages) if m.id > last_id]
+            for msg in fresh:
+                last_id = max(last_id, msg.id)
+                await process_source_message(msg.id, msg.raw_text or "", source="POLL")
+            if fresh:
+                log.info("Polling processed %s new message(s) | last_message_id=%s",
+                         len(fresh), last_id)
+        except Exception as e:
+            log.exception("Channel polling error: %s", e)
+        await asyncio.sleep(POLL_SECONDS)
 
 async def main():
     if not API_ID or not API_HASH or not TG_SESSION:
@@ -61,45 +118,52 @@ async def main():
     client = TelegramClient(StringSession(TG_SESSION), API_ID, API_HASH)
     await client.start()
     me = await client.get_me()
-    log.info("Telegram session authorized as %s", getattr(me, "username", None) or getattr(me, "id", None))
+    log.info("Telegram session authorized as %s",
+             getattr(me, "username", None) or getattr(me, "id", None))
 
     channel_entity = await client.get_entity(CHANNEL)
     log.info("Telegram source resolved: @%s | entity_id=%s | entity_type=%s",
              CHANNEL, getattr(channel_entity, "id", None), type(channel_entity).__name__)
-    log.info("Monitoring Telegram channel @%s | LIVE_TRADING=%s | LEVERAGE=%sx | TP=%.4f%% | SL=%.2f%%",
-             CHANNEL, LIVE_TRADING, LEVERAGE, TP_PCT * 100, SL_PCT * 100)
+
+    log.info("Monitoring Telegram channel @%s | LIVE_TRADING=%s | LEVERAGE=%sx | "
+             "TP=%.4f%% | SL=%.2f%% | POLL=%ss",
+             CHANNEL, LIVE_TRADING, LEVERAGE, TP_PCT * 100, SL_PCT * 100, POLL_SECONDS)
 
     notify("✅ MEXC AUTO TRADER ONLINE\n"
            f"Channel: @{CHANNEL}\nLIVE_TRADING={LIVE_TRADING}\n"
            f"Leverage: {LEVERAGE}x\nTP: {TP_PCT * 100}%\nSL: {SL_PCT * 100}%\n"
-           "Listener diagnostics: ENABLED")
+           f"Polling fallback: {POLL_SECONDS}s\nListener diagnostics: ENABLED")
 
-    @client.on(events.NewMessage(chats=channel_entity))
+    seen_ids = set()
+
+    @client.on(events.NewMessage())
     async def handler(event):
-        text = event.raw_text or ""
-        log.info("NEW SOURCE MESSAGE | chat_id=%s | message_id=%s | text=%s",
-                 getattr(event.chat, "id", None), getattr(event.message, "id", None),
-                 text[:2000].replace("\n", " | "))
-        parsed = parse_signal(text)
-        if not parsed:
-            log.info("MESSAGE IGNORED | no LONG/SHORT/PUMP/DUMP direction detected")
-            return
-        direction, symbol = parsed["direction"], parsed["symbol"]
-        log.info("PARSED SIGNAL | direction=%s | symbol=%s", direction, symbol or "UNKNOWN")
-        if not symbol:
-            notify("⚠️ SIGNAL RECEIVED BUT SYMBOL NOT PARSED\n"
-                   f"Direction: {direction}\nSource: @{CHANNEL}\nText: {text[:1200]}")
-            return
-        notify("🧪 TEST SIGNAL RECEIVED\n"
-               f"Direction: {direction}\nSymbol: {symbol}\n"
-               f"Margin: {MARGIN_USDT} USDT\nLeverage: {LEVERAGE}x\n"
-               f"TP: {TP_PCT * 100}% price move\nSL: {SL_PCT * 100}% price move\n"
-               f"LIVE_TRADING={LIVE_TRADING}\n"
-               "No real order will be placed while LIVE_TRADING=false.")
+        try:
+            chat = await event.get_chat()
+            chat_id = getattr(chat, "id", None)
+            username = (getattr(chat, "username", None) or "").lstrip("@")
+            if chat_id != getattr(channel_entity, "id", None) and username.lower() != CHANNEL.lower():
+                return
+            message_id = getattr(event.message, "id", None)
+            if message_id in seen_ids:
+                return
+            seen_ids.add(message_id)
+            await process_source_message(message_id, event.raw_text or "", source="EVENT")
+        except Exception as e:
+            log.exception("Event handler error: %s", e)
 
-    log.info("Listener registered successfully. Waiting for NEW SOURCE MESSAGE...")
-    await client.run_until_disconnected()
+    log.info("Global listener registered successfully.")
+    log.info("Polling fallback registered successfully. Waiting for new source messages...")
+
+    poll_task = asyncio.create_task(poll_channel(client, channel_entity))
+    try:
+        await client.run_until_disconnected()
+    finally:
+        poll_task.cancel()
+        try:
+            await poll_task
+        except asyncio.CancelledError:
+            pass
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
