@@ -1,235 +1,59 @@
-import os
-import re
-import asyncio
-import logging
-import requests
+import os,re,asyncio,logging,requests
 from decimal import Decimal
-from telethon import TelegramClient, events
+from telethon import TelegramClient,events
 from telethon.sessions import StringSession
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
-log = logging.getLogger("mexc_auto_trader")
-
-API_ID = int(os.getenv("TG_API_ID", "0"))
-API_HASH = os.getenv("TG_API_HASH", "")
-TG_SESSION = os.getenv("TG_SESSION", "")
-CHANNEL = os.getenv("TELEGRAM_CHANNEL", "skrenner_r").lstrip("@")
-NOTIFY_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-NOTIFY_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-MARGIN_USDT = Decimal(os.getenv("MARGIN_USDT", "25"))
-LEVERAGE = int(os.getenv("LEVERAGE", "30"))
-TP_PCT = Decimal(os.getenv("TP_PCT", "0.0083"))
-SL_PCT = Decimal(os.getenv("SL_PCT", "0.04"))
-LIVE_TRADING = os.getenv("LIVE_TRADING", "false").lower() == "true"
-
-
-def notify(message: str):
-    if not NOTIFY_TOKEN or not NOTIFY_CHAT_ID:
-        log.error("Telegram notification skipped: token/chat_id missing")
-        return False
-    try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{NOTIFY_TOKEN}/sendMessage",
-            data={"chat_id": NOTIFY_CHAT_ID, "text": message},
-            timeout=10,
-        )
-        data = r.json()
-        if r.ok and data.get("ok"):
-            log.info("Telegram notification SENT successfully | chat_id=%s", NOTIFY_CHAT_ID)
-            return True
-        log.error("Telegram notification FAILED | status=%s | response=%s", r.status_code, data)
-    except Exception as e:
-        log.exception("Telegram notification exception: %s", e)
-    return False
-
-
-def parse_signal(text: str):
-    t = text.upper()
-    if any(x in t for x in ("LONG", "PUMP", "🟢", "GREEN")):
-        direction = "LONG"
-    elif any(x in t for x in ("SHORT", "DUMP", "🔴", "RED")):
-        direction = "SHORT"
-    else:
-        return None
-
-    m = re.search(r"\b([A-Z0-9]{2,20})USDT\b", t)
-    if m:
-        return {"direction": direction, "symbol": m.group(1) + "USDT"}
-
-    m = re.search(r"[$#]\s*([A-Z0-9]{2,20})", t)
-    if not m:
-        m = re.search(r"\b([A-Z0-9]{2,20})\s*/\s*USDT\b", t)
-
-    return {"direction": direction, "symbol": (m.group(1) + "USDT") if m else None}
-
-
-async def process_source_message(message_id, text, source="EVENT"):
-    clean = (text or "").strip()
-    log.info(
-        "NEW SOURCE MESSAGE | source=%s | message_id=%s | text=%s",
-        source,
-        message_id,
-        clean[:2000].replace("\n", " | "),
-    )
-
-    parsed = parse_signal(clean)
-    if not parsed:
-        log.info("MESSAGE IGNORED | no LONG/SHORT/PUMP/DUMP direction detected")
-        return
-
-    direction, symbol = parsed["direction"], parsed["symbol"]
-    log.info("PARSED SIGNAL | direction=%s | symbol=%s", direction, symbol or "UNKNOWN")
-
-    if not symbol:
-        notify(
-            "⚠️ SIGNAL RECEIVED BUT SYMBOL NOT PARSED\n"
-            f"Direction: {direction}\nSource: @{CHANNEL}\n"
-            f"Message ID: {message_id}\nText: {clean[:1200]}"
-        )
-        return
-
-    notify(
-        "🧪 TEST SIGNAL RECEIVED\n"
-        f"Direction: {direction}\nSymbol: {symbol}\n"
-        f"Margin: {MARGIN_USDT} USDT\nLeverage: {LEVERAGE}x\n"
-        f"TP: {TP_PCT * 100}% price move\nSL: {SL_PCT * 100}% price move\n"
-        f"LIVE_TRADING={LIVE_TRADING}\nSource: @{CHANNEL}\n"
-        f"Message ID: {message_id}\n"
-        "No real order will be placed while LIVE_TRADING=false."
-    )
-
-
+logging.basicConfig(level=logging.INFO,format='%(asctime)s | %(levelname)s | %(message)s'); log=logging.getLogger('mexc_auto_trader')
+API_ID=int(os.getenv('TG_API_ID','0')); API_HASH=os.getenv('TG_API_HASH',''); TG_SESSION=os.getenv('TG_SESSION',''); CHANNEL=os.getenv('TELEGRAM_CHANNEL','skrenner_r').lstrip('@'); TOKEN=os.getenv('TELEGRAM_BOT_TOKEN',''); CHAT=os.getenv('TELEGRAM_CHAT_ID','')
+MARGIN=Decimal(os.getenv('MARGIN_USDT','25')); LEVERAGE=int(os.getenv('LEVERAGE','30')); TP=Decimal(os.getenv('TP_PCT','0.0067')); SL=Decimal(os.getenv('SL_PCT','0.04')); POLL=int(os.getenv('POLL_SECONDS','3')); LIVE=os.getenv('LIVE_TRADING','false').lower()=='true'
+def notify(s):
+ try:
+  r=requests.post(f'https://api.telegram.org/bot{TOKEN}/sendMessage',data={'chat_id':CHAT,'text':s},timeout=10); d=r.json()
+  if r.ok and d.get('ok'): log.info('TELEGRAM SEND OK | message_id=%s',d['result']['message_id']); return True
+  log.error('TELEGRAM SEND FAILED | status=%s | response=%s',r.status_code,d)
+ except Exception: log.exception('TELEGRAM SEND EXCEPTION')
+ return False
+def parse(t):
+ t=(t or '').upper(); direction='LONG' if re.search(r'\b(LONG|PUMP)\b',t) or '🟢' in t else ('SHORT' if re.search(r'\b(SHORT|DUMP)\b',t) or '🔴' in t else None)
+ if not direction:return None
+ for p in [r'\b([A-Z0-9]{2,20})USDT\b',r'[$#]\s*([A-Z0-9]{2,20})\b',r'\b([A-Z0-9]{2,20})\s*/\s*USDT\b']:
+  m=re.search(p,t)
+  if m:return direction,m.group(1)+'USDT'
+ return direction,None
+async def handle(m,src):
+ mid=getattr(m,'id',None); text=getattr(m,'raw_text','') or ''; log.info('SOURCE MESSAGE | source=%s | id=%s | text=%s',src,mid,text[:1500].replace('\n',' | ')); p=parse(text)
+ if not p: log.info('SOURCE MESSAGE IGNORED | no supported signal pattern'); return
+ direction,symbol=p; log.info('SIGNAL PARSED | direction=%s | symbol=%s',direction,symbol or 'UNKNOWN')
+ notify(('⚠️ СИГНАЛ ОТРИМАНИЙ, АЛЕ МОНЕТУ НЕ РОЗІЗНАНО\n' if not symbol else '🧪 SIGNAL TEST — отримано з джерела\n')+f'Напрямок: {direction}\n'+(f'Монета: {symbol}\n' if symbol else '')+f'Margin: {MARGIN} USDT\nLeverage: {LEVERAGE}x\nTP рух ціни: {TP*100}%\nSL рух ціни: {SL*100}%\nLIVE_TRADING={LIVE}\nSource: @{CHANNEL}\nMessage ID: {mid}')
+async def poll(client,entity,seen):
+ last=0
+ latest=await client.get_messages(entity,limit=1)
+ if latest:last=latest[0].id; log.info('POLL BASELINE | id=%s',last)
+ while True:
+  try:
+   msgs=await client.get_messages(entity,limit=20); fresh=[m for m in reversed(msgs) if m.id>last]
+   for m in fresh:
+    last=max(last,m.id)
+    if m.id not in seen:seen.add(m.id); await handle(m,'POLL')
+   if fresh:log.info('POLL FOUND %s NEW MESSAGE(S)',len(fresh))
+  except Exception:log.exception('POLL ERROR')
+  await asyncio.sleep(POLL)
 async def main():
-    if not API_ID or not API_HASH or not TG_SESSION:
-        raise RuntimeError("TG_API_ID, TG_API_HASH and TG_SESSION are required")
-
-    # This must be a Telegram user StringSession, not a BotFather token/session,
-    # for reliable monitoring of a channel/group the account can access.
-    client = TelegramClient(StringSession(TG_SESSION), API_ID, API_HASH)
-    await client.start()
-
-    me = await client.get_me()
-    me_username = getattr(me, "username", None)
-    me_id = getattr(me, "id", None)
-    is_bot = bool(getattr(me, "bot", False))
-    log.info(
-        "Telegram session authorized as %s | user_id=%s | is_bot=%s",
-        me_username or me_id,
-        me_id,
-        is_bot,
-    )
-    if is_bot:
-        log.warning(
-            "TG_SESSION belongs to a Telegram BOT account. "
-            "For reliable channel monitoring, use a normal Telegram USER StringSession."
-        )
-        notify(
-            "⚠️ TELEGRAM SESSION WARNING\n"
-            "TG_SESSION is authorized as a BOT account. "
-            "Use a normal Telegram USER StringSession for channel monitoring."
-        )
-
-    channel_entity = await client.get_entity(CHANNEL)
-    channel_id = getattr(channel_entity, "id", None)
-    channel_peer_id = None
-    try:
-        from telethon import utils
-        channel_peer_id = utils.get_peer_id(channel_entity)
-    except Exception:
-        pass
-    channel_username = (getattr(channel_entity, "username", None) or CHANNEL).lstrip("@")
-    log.info(
-        "Telegram source resolved: @%s | entity_id=%s | peer_id=%s | entity_type=%s",
-        channel_username,
-        channel_id,
-        channel_peer_id,
-        type(channel_entity).__name__,
-    )
-
-    log.info(
-        "Monitoring Telegram channel @%s | LIVE_TRADING=%s | LEVERAGE=%sx | "
-        "TP=%.4f%% | SL=%.2f%%",
-        channel_username,
-        LIVE_TRADING,
-        LEVERAGE,
-        TP_PCT * 100,
-        SL_PCT * 100,
-    )
-
-    notify(
-        "✅ MEXC AUTO TRADER ONLINE\n"
-        f"Channel: @{channel_username}\n"
-        f"Telegram session: {'BOT' if is_bot else 'USER'}\n"
-        f"LIVE_TRADING={LIVE_TRADING}\n"
-        f"Leverage: {LEVERAGE}x\nTP: {TP_PCT * 100}%\nSL: {SL_PCT * 100}%\n"
-        "Monitoring: TARGETED EVENT + GLOBAL DIAGNOSTIC\n"
-        "No real orders are placed while LIVE_TRADING=false."
-    )
-
-    seen_messages = set()
-
-    async def handle_event(event, source):
-        try:
-            message = event.message
-            message_id = getattr(message, "id", None)
-            message_text = message.raw_text or ""
-            dedupe_key = (message_id, message_text)
-            if dedupe_key in seen_messages:
-                return
-
-            chat = await event.get_chat()
-            chat_id = getattr(chat, "id", None)
-            username = (getattr(chat, "username", None) or "").lstrip("@")
-            title = getattr(chat, "title", None)
-
-            log.info(
-                "TELEGRAM EVENT RECEIVED | source=%s | chat_id=%s | username=@%s | title=%s | message_id=%s",
-                source,
-                chat_id,
-                username or "",
-                title or "",
-                message_id,
-            )
-
-            # Telethon may expose a channel as entity.id (positive) but event.chat_id
-            # as the marked peer ID (-100xxxxxxxxxx). Match canonical peer ID or username.
-            is_target = (
-                (channel_peer_id is not None and chat_id == channel_peer_id)
-                or chat_id == channel_id
-                or username.lower() == channel_username.lower()
-            )
-            if not is_target:
-                log.info("EVENT IGNORED | not target channel")
-                return
-
-            seen_messages.add(dedupe_key)
-            await process_source_message(message_id, message_text, source=source)
-        except Exception as e:
-            log.exception("Event handler error: %s", e)
-
-    # Targeted listener: Telethon filters events before our handler.
-    @client.on(events.NewMessage(chats=channel_entity))
-    async def targeted_new_message(event):
-        await handle_event(event, "TARGETED_NEW_MESSAGE")
-
-    # Some signal systems publish a placeholder and then edit it. Listen for edits too.
-    @client.on(events.MessageEdited(chats=channel_entity))
-    async def targeted_message_edited(event):
-        await handle_event(event, "TARGETED_MESSAGE_EDITED")
-
-    # Global diagnostic listener: if the targeted filter fails, this shows exactly
-    # what Telegram is delivering to the session, without hiding it behind filters.
-    @client.on(events.NewMessage())
-    async def global_new_message(event):
-        await handle_event(event, "GLOBAL_NEW_MESSAGE")
-
-    log.info("Targeted NewMessage listener registered successfully.")
-    log.info("Targeted MessageEdited listener registered successfully.")
-    log.info("Global diagnostic NewMessage listener registered successfully.")
-    log.info("Waiting for new source messages from @%s ...", channel_username)
-
-    await client.run_until_disconnected()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+ if not API_ID or not API_HASH or not TG_SESSION:raise RuntimeError('TG_API_ID, TG_API_HASH and TG_SESSION are required')
+ client=TelegramClient(StringSession(TG_SESSION),API_ID,API_HASH); await client.start(); me=await client.get_me(); log.info('TELEGRAM AUTH OK | user=%s',getattr(me,'username',None) or getattr(me,'id',None))
+ entity=await client.get_entity(CHANNEL); log.info('SOURCE RESOLVED | @%s | id=%s | type=%s',CHANNEL,getattr(entity,'id',None),type(entity).__name__)
+ latest=await client.get_messages(entity,limit=1); log.info('SOURCE READ TEST OK | latest_message_id=%s',latest[0].id if latest else 'NONE')
+ notify(f'✅ MEXC AUTO TRADER ONLINE\nSource: @{CHANNEL}\n30x | TP {TP*100}% price move | SL {SL*100}%\nLIVE_TRADING={LIVE}\nEVENT + POLLING active.')
+ seen=set()
+ @client.on(events.NewMessage())
+ async def h(e):
+  try:
+   c=await e.get_chat(); cid=getattr(c,'id',None); u=(getattr(c,'username',None) or '').lstrip('@'); tid=getattr(entity,'id',None); log.info('TELEGRAM EVENT | chat_id=%s | username=%s | target_id=%s',cid,u or '@',tid)
+   if cid!=tid and u.lower()!=CHANNEL.lower():return
+   mid=getattr(e.message,'id',None)
+   if mid in seen:return
+   seen.add(mid); await handle(e.message,'EVENT')
+  except Exception:log.exception('GLOBAL EVENT ERROR')
+ log.info('EVENT LISTENER ACTIVE'); log.info('POLLING LISTENER ACTIVE | interval=%ss',POLL); task=asyncio.create_task(poll(client,entity,seen));
+ try:await client.run_until_disconnected()
+ finally:task.cancel()
+if __name__=='__main__':asyncio.run(main())
