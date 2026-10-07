@@ -61,3 +61,7 @@ LIVE_TRADING=False
 ```
 
 Реальні MEXC ордери ця діагностична збірка не відкриває.
+
+
+## Monitoring fix v3
+Fixed Telegram channel matching to support Telethon marked peer IDs (-100...). TELEGRAM_CHANNEL remains skrenner_r. LIVE_TRADING remains false by default.

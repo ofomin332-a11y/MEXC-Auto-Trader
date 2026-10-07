@@ -131,11 +131,18 @@ async def main():
 
     channel_entity = await client.get_entity(CHANNEL)
     channel_id = getattr(channel_entity, "id", None)
+    channel_peer_id = None
+    try:
+        from telethon import utils
+        channel_peer_id = utils.get_peer_id(channel_entity)
+    except Exception:
+        pass
     channel_username = (getattr(channel_entity, "username", None) or CHANNEL).lstrip("@")
     log.info(
-        "Telegram source resolved: @%s | entity_id=%s | entity_type=%s",
+        "Telegram source resolved: @%s | entity_id=%s | peer_id=%s | entity_type=%s",
         channel_username,
         channel_id,
+        channel_peer_id,
         type(channel_entity).__name__,
     )
 
@@ -184,9 +191,14 @@ async def main():
                 message_id,
             )
 
-            # Target check is deliberately tolerant: channel username, entity id,
-            # and event chat id can differ in how Telegram exposes peer metadata.
-            if chat_id != channel_id and username.lower() != channel_username.lower():
+            # Telethon may expose a channel as entity.id (positive) but event.chat_id
+            # as the marked peer ID (-100xxxxxxxxxx). Match canonical peer ID or username.
+            is_target = (
+                (channel_peer_id is not None and chat_id == channel_peer_id)
+                or chat_id == channel_id
+                or username.lower() == channel_username.lower()
+            )
+            if not is_target:
                 log.info("EVENT IGNORED | not target channel")
                 return
 
